@@ -10,6 +10,6 @@ langchain-openai==0.3.28
 langchain-experimental==0.3.1
 openai>=1.14.0
 tabulate==0.9.0
-tiktoken>=0.6.0         
-FLASK_SECRET_KEY=f5a712fe70c4498c1e80b9a3df4e8e746841d2bf51a4c9a47b11a2e1f3f0e654
+tiktoken>=0.6.0        
+
 
