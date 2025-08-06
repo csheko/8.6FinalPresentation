@@ -1,15 +1,7 @@
-# ─────────────────────────  app.py  ───────────────────────────────────────────
-"""
-Business-Intelligence Assistant
-• Upload any CSV → auto-loads into SQLite
-• Ask questions → agent answers with SQL + Python
-• Charts are saved as PNG files in static/charts/ and displayed inline
-"""
-
-import os, uuid                               # uuid used both here and in agent code
+import os, uuid
 from pathlib import Path
 
-# ── Prevent GUI pop-ups from Matplotlib
+# prevent any GUI back-ends on Azure
 os.environ["MPLBACKEND"] = "Agg"
 
 import pandas as pd
@@ -25,11 +17,11 @@ from langchain_experimental.tools.python.tool import PythonAstREPLTool
 from langchain.memory import ConversationBufferMemory
 from langchain.agents import initialize_agent, AgentType
 
-# ── Environment / folder setup ────────────────────────────────────────────────
+# ── env & folders ────────────────────────────────────────────────────────────
 load_dotenv()
 
 STATIC_CHART_DIR = Path("static/charts")
-STATIC_CHART_DIR.mkdir(parents=True, exist_ok=True)  # ensure charts dir exists
+STATIC_CHART_DIR.mkdir(parents=True, exist_ok=True)
 
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "supersecretkey")
@@ -40,44 +32,44 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 openai_key = os.getenv("OPENAI_API_KEY")
 llm = ChatOpenAI(api_key=openai_key, model_name="gpt-4o", temperature=0.3)
 
-# ── Per-session memory cache ──────────────────────────────────────────────────
-_USER_MEMORY: dict[str, ConversationBufferMemory] = {}  # {sid: memory}
+# per-session conversational memory
+_USER_MEMORY: dict[str, ConversationBufferMemory] = {}
 
 
 def _get_session_id() -> str:
-    """Return a stable UUID stored in the Flask session cookie."""
     if "sid" not in session:
         session["sid"] = uuid.uuid4().hex
         session.modified = True
     return session["sid"]
 
 
-# ── Agent instructions ────────────────────────────────────────────────────────
-AGENT_PREFIX = f"""
+# ── Agent prompt (Option A: extended) ─────────────────────────────────────────
+AGENT_PREFIX = """
 You are a Business-Intelligence assistant with two tools:
 
-1. query_sql_db – run SQL on the current SQLite database.
-2. python_repl  – execute Python for statistics, ML, or charting.
+1. **query_sql_db** – run SQL against the active SQLite database.
+2. **python_repl**  – execute Python for calculations or charting.
 
-╭─ If a question requires numbers
-│   • Run SQL first, then do calculations in python_repl and embed results.
+╭─ When the user asks for numbers
+│   • Run SQL first, then calculate with python_repl.
 │
-├─ If a question asks for a graph
+├─ When the user asks for a chart
 │   • In python_repl:
 │       import matplotlib.pyplot as plt, uuid, os
-│       fname = f"charts/{{uuid.uuid4().hex}}.png"
+│       fname = f"charts/{uuid.uuid4().hex}.png"
 │       full_path = os.path.join("static", fname)
-│       plt.savefig(full_path, bbox_inches="tight")      # Never call plt.show()
-│       print(f'<img src="/static/{{fname}}" style="max-width:100%;height:auto;" />')
+│       plt.savefig(full_path, bbox_inches="tight")
 │       plt.close()
-│   • Do NOT print anything else.
+│       print(f'<img src="/static/{fname}" '
+│             'style="max-width:100%;height:auto;" />')
 │
-└─ Always finish with **Final Answer:** containing
-    • A concise narrative of findings,
-    • (optional) the <img …> tag on its own line,
-    • A **Next-Steps Recommendation** bullet list.
+└─ In **every Final Answer**
+    1. Paste exactly what python_repl printed on its own line
+       (the <img …> tag for charts, or any numeric output).
+    2. Add a concise plain-English insight and, if relevant,
+       bullet-point recommendations (**Next Steps**).
 
-Never reveal internal stack traces unless asked explicitly.
+Never reveal internal stack traces unless the user explicitly requests them.
 """
 
 AGENT_FORMAT = """
@@ -90,17 +82,16 @@ Observation: <tool result>
 Final Answer: <clear, user-facing explanation>
 """
 
-# ── Python REPL tool definition ───────────────────────────────────────────────
 python_tool = PythonAstREPLTool(
     name="python_repl",
     description=(
-        "Execute Python for KPI calculations, statistics, ML, or matplotlib "
-        "charts. When graphing, save the figure to static/charts/ and PRINT one "
-        "<img> tag pointing to that PNG."
+        "Execute Python for KPI calculations, statistics, ML, "
+        "or matplotlib charts. When graphing, save the figure to "
+        "static/charts/ and PRINT one <img> tag pointing to that PNG."
     ),
 )
 
-# ── Helper: build / reuse agent bound to a SQLite DB ──────────────────────────
+# ── create / reuse agent bound to a DB ────────────────────────────────────────
 def create_agent_for_db(db_uri: str):
     sid = _get_session_id()
     memory = _USER_MEMORY.get(sid)
@@ -128,7 +119,7 @@ def create_agent_for_db(db_uri: str):
         },
     )
 
-# ── Routes ────────────────────────────────────────────────────────────────────
+# ── Flask routes ─────────────────────────────────────────────────────────────
 @app.route("/", methods=["GET"])
 def index():
     return render_template("index.html")
@@ -139,7 +130,7 @@ def ask_question():
     question = request.form.get("question", "")
     file_obj = request.files.get("file")
 
-    # Handle optional CSV upload
+    # optional CSV upload
     if file_obj:
         try:
             filename = f"{uuid.uuid4().hex}_{file_obj.filename}"
@@ -165,7 +156,6 @@ def ask_question():
     if "db_path" not in session:
         return jsonify({"answer": "No dataset uploaded yet."})
 
-    # Invoke the agent
     try:
         agent = create_agent_for_db(f"sqlite:///{session['db_path']}")
         result = agent.invoke({"input": question})
@@ -180,6 +170,7 @@ def reset():
     session.clear()
     return jsonify({"message": "Session reset."})
 
-# ── Entrypoint ────────────────────────────────────────────────────────────────
+
+# ── Entrypoint (local dev) ───────────────────────────────────────────────────
 if __name__ == "__main__":
     app.run(debug=True, use_reloader=False)
